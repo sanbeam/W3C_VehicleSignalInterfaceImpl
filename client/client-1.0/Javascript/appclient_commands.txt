@@ -1,16 +1,22 @@
-// Websocket request examples
+// Five HTML clients are available for testing purposes
+ - httpclient.html  // HTTP(S) requests to VISSv2 server
+ - wsclient_uncompressed.html // WS(S) requests to VISSv2 server
+ - wsclient_compressed.html // WS(S) requests to VISSv2 server, using an experimental compression algorithm
+ - agtclient.html // HTTP requests to Access Grant Token server
+ - agclient.html // HTTP requests to Access Token server
 
+ // Websocket request examples
 Get request:
 {"action":"get","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","requestId":"232"}
 {"action":"get","path":"Vehicle.Acceleration.Longitudinal","requestId":"233"}
 
 Get request for historic data:
-{"action":"get","path":"Vehicle.Acceleration.Longitudinal","filter":{"op-type":"history","op-value":"P2DT12H"},"requestId":"234"}
+{"action":"get","path":"Vehicle.Acceleration.Longitudinal","filter":{"type":"history","value":"P2DT12H"},"requestId":"234"}
 
 Get request with search:
-{"action":"get","path":"Vehicle/Cabin/Door","filter":{"op-type":"paths","op-value":"*.*.IsOpen"},"requestId":"235"}
-{"action":"get","path":"Vehicle.ADAS.ABS","filter":{"op-type":"paths","op-value":"*"},"requestId":"236"}
-{"action":"get","path":"Vehicle/ADAS","filter":{"op-type":"paths","op-value":["ABS/*","CruiseControl/Error"]},"requestId":"237"}
+{"action":"get","path":"Vehicle/Cabin/Door","filter":{"type":"paths","value":"*.*.IsOpen"},"requestId":"235"}
+{"action":"get","path":"Vehicle.ADAS.ABS","filter":{"type":"paths","value":"*"},"requestId":"236"}
+{"action":"get","path":"Vehicle/ADAS","filter":{"type":"paths","value":["ABS/*","CruiseControl/Error"]},"requestId":"237"}
 
 
 Get request with AT token (XXX must be replaced with actual token):
@@ -18,17 +24,18 @@ Get request with AT token (XXX must be replaced with actual token):
 {"action":"get","path":"Vehicle.Body.BodyType","authorization":"XXX","requestId":"243"}
 
 Service discovery request:
-{"action":"get","path":"Vehicle/ADAS/ABS","metadata":"static","requestId":"244"}
+{"action":"get","path":"Vehicle/ADAS/ABS","filter":{"type":"static-metadata","value":""},"requestId":"244"}
 
 Set request:
 {"action":"set", "path":"Vehicle/Cabin/Door/Row1/Right/IsOpen", "value":"999", "requestId":"245"}
 
 Subscribe request:
-{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"op-type":"capture","op-value":"time-based","op-extra":{"period":"3"}},"requestId":"246"}
-{"action":"subscribe","path":"Vehicle.Cabin.Door.Row1.Right.IsOpen","filter":{"op-type":"capture","op-value":"change","op-extra":{"logic-op":"gt", "diff":"10"}},"requestId":"247"}
-{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"op-type":"capture","op-value":"range","op-extra":{"logic-op":"gt","boundary":"500"}},"requestId":"255"}
-{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"op-type":"capture","op-value":"range","op-extra":[{"logic-op":"gt","boundary":"500"},{"logic-op":"lt","boundary":"510"}]},"requestId":"265"}
-{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"op-type":"capture","op-value":"curve-logic","op-extra":{"max-err":"5","buf-size":"100"}},"requestId":"275"}
+{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"type":"timebased","value":{"period":"3"}},"requestId":"246"}
+{"action":"subscribe","path":"Vehicle.Cabin.Door.Row1.Right.IsOpen","filter":{"type":"change","value":{"logic-op":"gt", "diff":"10"}},"requestId":"247"}
+{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"type":"range","value":{"logic-op":"gt","boundary":"500"}},"requestId":"255"}
+{"action":"subscribe","path":"Vehicle/Cabin/Door/Row1/Right/IsOpen","filter":{"type":"range","value":[{"logic-op":"gt","boundary":"500"},{"logic-op":"lt","boundary":"510"}]},"requestId":"265"}
+{"action":"subscribe","path":"Vehicle.Powertrain.Transmission.Speed","filter":{"type":"curvelog","value":{"maxerr":"2","bufsize":"100"}},"requestId":"275"}
+{"action":"subscribe","path":"Vehicle","filter":[{"type":"paths","value":["CurrentLocation.Latitude", "CurrentLocation.Longitude"]}, {"type":"curvelog","value":{"maxerr":"0.00001","bufsize":"100"}}],"requestId":"285"}
 
 Unsubscribe request:
 {"action":"unsubscribe","subscriptionId":"1","requestId":"240"}
@@ -44,12 +51,12 @@ URL: Vehicle.Acceleration.Longitudinal
 
 Get request with search:
 HTTP GET 
-URL: Vehicle/Cabin?filter={"op-type":"paths", "op-value":["Door/*/*/IsOpen", "Convertible/Status"]}
-URL: Vehicle.ADAS?filter={"op-type":"paths", "op-value":["ABS.*", "CruiseControl.Error"]}
+URL: Vehicle/Cabin?filter={"type":"paths", "value":["Door/*/*/IsOpen", "Convertible/Status"]}
+URL: Vehicle.ADAS?filter={"type":"paths", "value":["ABS.*", "CruiseControl.Error"]}
 
 Get request for historic data:
 HTTP GET 
-URL: Vehicle.Acceleration.Longitudinal?filter={"op-type":"history", "op-value":"P2DT12H"}
+URL: Vehicle.Acceleration.Longitudinal?filter={"type":"history", "value":"P2DT12H"}
 
 Set request:
 HTTP POST 
@@ -58,8 +65,10 @@ Payload: 0.123
 
 Service discovery request:
 HTTP GET 
-URL: Vehicle/ADAS/ABS?metadata=static
+URL: Vehicle/ADAS/ABS?filter={"type":"static-metadata", "value":""}
 
+// ********* Access control testing *************
+// requires that a binary VSS file has been generated with "validate" tags added into vspec file(s).
 
 //  AGTserver POST input:
 <Gen2 server IP address>
@@ -72,6 +81,11 @@ agtserver
 atserver
 {"token":"ag-token", "purpose":"fuel-status", "pop":"GHI"}  // pop included only if a key was present in AGT request, token value must be replaced by the AG token, purpose must be on the Purpose list
 
-
-
+//VISSv2 server request for fuel-status use case: 
+wsclient_uncompressed.html:
+{"action":"get","path":"Vehicle.Powertrain.FuelSystem","filter":{"type":"paths","value":["Level","Range"]},"authorization":"at","requestId":"235"}
+// where "at" is the Access Token from ATS request
+http_client.html:
+URL: Vehicle/Cabin/Door/Row1/Right/IsOpen
+Access token: from ATS request
 

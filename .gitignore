@@ -6,12 +6,21 @@
 *.dylib
 .DS_Store
 
+# cert files
+*.crt
+*.srl
+*.key
+*.csr
 
 #log files
 ws-mgr-log.txt
 service-mgr-log.txt
 http-mgr-log.txt
 servercore-log.txt
+
+#helper files
+vsspathlist.json
+vss_vissv2.binary
 
 # Test binary, built with `go test -c`
 *.test
@@ -47,3 +56,7 @@ mqtt_mgr
 vendor/
 logs/
 
+
+.gitignore
+***workspace.code-workspace
+***.vscode

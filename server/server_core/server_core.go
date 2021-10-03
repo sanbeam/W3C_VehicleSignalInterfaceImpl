@@ -13,8 +13,11 @@ package main
 import (
 	//   "fmt"
 	"flag"
+	"fmt"
+	"os"
 	"regexp"
 
+	"github.com/akamensky/argparse"
 	"github.com/gorilla/websocket"
 
 	"bytes"
@@ -396,7 +399,7 @@ func searchTree(rootNode *gomodel.Node_t, path string, anyDepth bool, leafNodesO
 		var searchData []golib.SearchData_t
 		var matches int
 		searchData, matches = golib.VSSsearchNodes(path, rootNode, MAXFOUNDNODES, anyDepth, leafNodesOnly, listSize, noScopeList, validation)
-//		searchData, matches = golib.VSSsearchNodes(path, rootNode, MAXFOUNDNODES, anyDepth, leafNodesOnly, validation)
+		//		searchData, matches = golib.VSSsearchNodes(path, rootNode, MAXFOUNDNODES, anyDepth, leafNodesOnly, validation)
 		return matches, searchData
 	}
 	return 0, nil
@@ -448,13 +451,13 @@ func setTokenErrorResponse(reqMap map[string]interface{}, errorCode int) {
 func accessTokenServerValidation(token string, paths string, action string, validation int) int {
 	hostIp := utils.GetServerIP()
 	url := "http://" + hostIp + ":8600/atserver"
-	utils.Info.Printf("verifyTokenSignature::url = %s", url)
+	utils.Info.Printf("accessTokenServerValidation::url = %s", url)
 
-	data := []byte(`{"token":"` + token + `"paths":"` + paths + `", "action":"` + action + `"validation":"` + strconv.Itoa(validation) + `"}`)
+	data := []byte(`{"token":"` + token + `","paths":` + paths + `,"action":"` + action + `","validation":"` + strconv.Itoa(validation) + `"}`)
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
 	if err != nil {
-		utils.Error.Print("verifyTokenSignature: Error reading request. ", err)
+		utils.Error.Print("accessTokenServerValidation: Error reading request. ", err)
 		return -128
 	}
 
@@ -469,7 +472,7 @@ func accessTokenServerValidation(token string, paths string, action string, vali
 	// Send request
 	resp, err := client.Do(req)
 	if err != nil {
-		utils.Error.Print("verifyTokenSignature: Error reading response. ", err)
+		utils.Error.Print("accessTokenServerValidation: Error reading response. ", err)
 		return -128
 	}
 	defer resp.Body.Close()
@@ -517,7 +520,7 @@ func verifyToken(token string, action string, paths string, validation int) int 
 
 func isDataMatch(queryData string, response string) bool { // deprecated when new query syntax is introduced, range=x may be supported by service-mgr, but in a different way
 	var responsetMap = make(map[string]interface{})
-	utils.ExtractPayload(response, &responsetMap)
+	utils.MapRequest(response, &responsetMap)
 	utils.Info.Printf("isDataMatch:queryData=%s, value=%s", queryData, responsetMap["value"].(string))
 	if responsetMap["value"].(string) == queryData {
 		return true
@@ -720,7 +723,7 @@ func extractNoScopeElementsLevel2(noScopeMap []interface{}) ([]string, int) {
 		switch vv := v.(type) {
 		case string:
 			utils.Info.Println(k, "is string", vv)
-				noScopeList[i] = vv
+			noScopeList[i] = vv
 		default:
 			utils.Info.Println(k, "is of an unknown type")
 		}
@@ -758,19 +761,109 @@ func getTokenContext(reqMap map[string]interface{}) string {
 	return ""
 }
 
-func validAction(action string) bool {
-	if action == "get" || action == "set" || action == "subscribe" || action == "unsubscribe" {
-		return true
+func validRequest(request string, action string) bool {
+	switch (action) {
+	  case "get": return isValidGetParams(request)
+	  case "set": return isValidSetParams(request)
+	  case "subscribe": return isValidSubscribeParams(request)
+	  case "unsubscribe": return isValidUnsubscribeParams(request)
 	}
 	return false
 }
 
+func isValidGetParams(request string) bool {
+	if (strings.Contains(request, "path") == false) {
+	    return false
+	}
+	if (strings.Contains(request, "filter") == true) {
+	    return isValidGetFilter(request)  
+	}
+	return true
+}
+
+func isValidGetFilter(request string) bool { // paths, history,static-metadata, dynamic-metadata supported
+	if (strings.Contains(request, "paths") == true) {
+	    if (strings.Contains(request, "value") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "history") == true) {
+	    if (strings.Contains(request, "value") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "static-metadata") == true) {
+	    if (strings.Contains(request, "value") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "dynamic-metadata") == true) {
+	    if (strings.Contains(request, "value") == true) {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidSetParams(request string) bool {
+	return strings.Contains(request, "path") && strings.Contains(request, "value")
+}
+
+func isValidSubscribeParams(request string) bool {
+	if (strings.Contains(request, "path") == false) {
+	    return false
+	}
+	if (strings.Contains(request, "filter") == true) {
+	    return isValidSubscribeFilter(request)  
+	}
+	return true
+}
+
+func isValidSubscribeFilter(request string) bool { // paths, history, timebased, range, change, curvelog, static-metadata, dynamic-metadata supported
+	if (isValidGetFilter(request) == true) {
+	    return true
+	}
+	if (strings.Contains(request, "timebased") == true) {
+	    if (strings.Contains(request, "value") == true  && strings.Contains(request, "period") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "range") == true) {
+	    if (strings.Contains(request, "value") == true  && strings.Contains(request, "logic-op") == true && 
+	        strings.Contains(request, "boundary") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "change") == true) {
+	    if (strings.Contains(request, "value") == true  && strings.Contains(request, "logic-op") == true && 
+	        strings.Contains(request, "diff") == true) {
+	        return true
+	    }
+	}
+	if (strings.Contains(request, "curvelog") == true) {
+	    if (strings.Contains(request, "value") == true  && strings.Contains(request, "maxerr") == true && 
+	        strings.Contains(request, "bufsize") == true) {
+			return true
+		}
+	}
+	return false
+}
+
+func isValidUnsubscribeParams(request string) bool {
+	return strings.Contains(request, "subscriptionId")
+}
+
 func serveRequest(request string, tDChanIndex int, sDChanIndex int) {
 	var requestMap = make(map[string]interface{})
-	utils.ExtractPayload(request, &requestMap)
-	if validAction(requestMap["action"].(string)) == false {
-		utils.Error.Printf("serveRequest():invalid action=%s", requestMap["action"])
-		utils.SetErrorResponse(requestMap, errorResponseMap, "400", "invalid action", "See VISSv2 spec for valid request actions.")
+	if utils.MapRequest(request, &requestMap) != 0 {
+		utils.Error.Printf("serveRequest():invalid JSON format=%s", request)
+		utils.SetErrorResponse(requestMap, errorResponseMap, "400", "invalid request syntax", "See VISSv2 spec and JSON RFC for valid request syntax.")
+		backendChan[tDChanIndex] <- utils.FinalizeMessage(errorResponseMap)
+		return
+	}
+	if requestMap["action"] == nil || validRequest(request, requestMap["action"].(string)) == false {
+		utils.Error.Printf("serveRequest():invalid action params=%s", requestMap["action"])
+		utils.SetErrorResponse(requestMap, errorResponseMap, "400", "invalid request syntax", "Request parameter invalid.")
 		backendChan[tDChanIndex] <- utils.FinalizeMessage(errorResponseMap)
 		return
 	}
@@ -826,10 +919,10 @@ func issueServiceRequest(requestMap map[string]interface{}, tDChanIndex int, sDC
 		var filterList []utils.FilterObject
 		utils.UnpackFilter(requestMap["filter"], &filterList)
 		for i := 0; i < len(filterList); i++ {
-			utils.Info.Printf("filterList[%d].OpType=%s, filterList[%d].OpValue=%s", i, filterList[i].OpType, i, filterList[i].OpValue)
-			if filterList[i].OpType == "paths" {
-				if strings.Contains(filterList[i].OpValue, "[") == true {
-					err := json.Unmarshal([]byte(filterList[i].OpValue), &searchPath)
+			utils.Info.Printf("filterList[%d].Type=%s, filterList[%d].Value=%s", i, filterList[i].Type, i, filterList[i].Value)
+			if filterList[i].Type == "paths" {
+				if strings.Contains(filterList[i].Value, "[") == true {
+					err := json.Unmarshal([]byte(filterList[i].Value), &searchPath)
 					if err != nil {
 						utils.Error.Printf("Unmarshal filter path array failed.")
 						utils.SetErrorResponse(requestMap, errorResponseMap, "400", "Internal error.", "Unmarshall failed on array of paths.")
@@ -841,7 +934,7 @@ func issueServiceRequest(requestMap map[string]interface{}, tDChanIndex int, sDC
 					}
 				} else {
 					searchPath = make([]string, 1)
-					searchPath[0] = rootPath + "." + filterList[i].OpValue
+					searchPath[0] = rootPath + "." + filterList[i].Value
 				}
 				break // only one paths object is allowed
 			}
@@ -895,7 +988,7 @@ func issueServiceRequest(requestMap map[string]interface{}, tDChanIndex int, sDC
 			errorCode = -1
 		} else {
 			if requestMap["action"] != "get" || maxValidation != 1 { // no validation for read requests when validation is 1 (write-only)
-				errorCode = verifyToken(requestMap["authorization"].(string), requestMap["action"].(string), requestMap["path"].(string), maxValidation)
+				errorCode = verifyToken(requestMap["authorization"].(string), requestMap["action"].(string), paths, maxValidation)
 			}
 		}
 		if errorCode < 0 {
@@ -945,10 +1038,22 @@ func createPathListFile(listFname string) {
 }
 
 func main() {
-	pathList := flag.Bool("p", false, "dry run to generate vsspathlist file")
-	flag.Parse()
+	// Create new parser object
+	parser := argparse.NewParser("print", "Server Core")
+	// Create string flag
+	logFile := parser.Flag("", "logfile", &argparse.Options{Required: false, Help: "outputs to logfile in ./logs folder"})
+	logLevel := parser.Selector("", "loglevel", []string{"trace", "debug", "info", "warn", "error", "fatal", "panic"}, &argparse.Options{
+		Required: false,
+		Help:     "changes log output level",
+		Default:  "info"})
+	pathList := parser.Flag("", "dryrun", &argparse.Options{Required: false, Help: "dry run to generate vsspathlist file", Default: false})
+	// Parse input
+	err := parser.Parse(os.Args)
+	if err != nil {
+		fmt.Print(parser.Usage(err))
+	}
 
-	utils.InitLog("servercore-log.txt", "./logs")
+	utils.InitLog("servercore-log.txt", "./logs", *logFile, *logLevel)
 
 	if !initVssFile() {
 		utils.Error.Fatal(" Tree file not found")

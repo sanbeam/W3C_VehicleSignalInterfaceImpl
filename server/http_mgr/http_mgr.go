@@ -9,10 +9,13 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
 	"github.com/MEAE-GOT/W3C_VehicleSignalInterfaceImpl/utils"
+	"github.com/akamensky/argparse"
 	"github.com/gorilla/websocket"
 )
 
@@ -26,12 +29,30 @@ import (
       - spawn a WS server for every connecting app client
       - forward data between app clients and core server, injecting mgr Id (and appClient Id?) into payloads
 **/
+
 func main() {
+	// Create new parser object
+	parser := argparse.NewParser("print", "http manager")
+	// Create string flag
+	logFile := parser.Flag("", "logfile", &argparse.Options{Required: false, Help: "outputs to logfile in ./logs folder"})
+	logLevel := parser.Selector("", "loglevel", []string{"trace", "debug", "info", "warn", "error", "fatal", "panic"}, &argparse.Options{
+		Required: false,
+		Help:     "changes log output level",
+		Default:  "info"})
+
+	// Parse input
+	err := parser.Parse(os.Args)
+	if err != nil {
+		fmt.Print(parser.Usage(err))
+	}
+
 	utils.TransportErrorMessage = "HTTP transport mgr-finalizeResponse: JSON encode failed.\n"
-	utils.InitLog("http-mgr-log.txt", "./logs")
+	utils.InitLog("http-mgr-log.txt", "./logs", *logFile, *logLevel)
 
 	regData := utils.RegData{}
 	utils.RegisterAsTransportMgr(&regData, "HTTP")
+
+	utils.ReadTransportSecConfig()
 
 	go utils.HttpServer{}.InitClientServer(utils.MuxServer[0]) // go routine needed due to listenAndServe call...
 	dataConn := utils.InitDataSession(utils.MuxServer[1], regData)

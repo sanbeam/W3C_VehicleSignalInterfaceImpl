@@ -13,17 +13,19 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
-	"flag"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
-	"sync"
+
+	//	"sync"
 	"time"
 
 	"github.com/MEAE-GOT/W3C_VehicleSignalInterfaceImpl/utils"
+	"github.com/akamensky/argparse"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -39,21 +41,15 @@ type RegResponse struct {
 }
 
 type SubscriptionState struct {
-	subscriptionId  int
-	routerId        string
-	path            []string
-	filterList      []utils.FilterObject
-	latestDataPoint string
+	subscriptionId      int
+	SubscriptionThreads int  //only used by subs that spawn multiple threads that return notifications
+	routerId            string
+	path                []string
+	filterList          []utils.FilterObject
+	latestDataPoint     string
 }
 
 var subscriptionId int
-var killCurveLogicId int = -1 //mutex m shall be used for read/write
-var m sync.Mutex
-
-type CLPack struct {
-	DataPack       string
-	SubscriptionId int
-}
 
 type HistoryList struct {
 	Path      string
@@ -227,16 +223,22 @@ func getSubcriptionStateIndex(subscriptionId int, subscriptionList []Subscriptio
 	return -1
 }
 
+func setSubscriptionListThreads(subscriptionList []SubscriptionState, subThreads SubThreads) []SubscriptionState {
+	index := getSubcriptionStateIndex(subThreads.SubscriptionId, subscriptionList)
+	subscriptionList[index].SubscriptionThreads = subThreads.NumofThreads
+	return subscriptionList
+}
+
 func checkRangeChangeFilter(filterList []utils.FilterObject, latestDataPoint string, currentDataPoint string) bool {
 	for i := 0; i < len(filterList); i++ {
-		if filterList[i].OpType == "paths" || filterList[i].OpValue == "time-based" || filterList[i].OpValue == "curve-logic" {
+		if filterList[i].Type == "paths" || filterList[i].Type == "timebased" || filterList[i].Type == "curvelog" {
 			continue
 		}
-		if filterList[i].OpValue == "range" {
-			return evaluateRangeFilter(filterList[i].OpExtra, getDPValue(currentDataPoint))
+		if filterList[i].Type == "range" {
+			return evaluateRangeFilter(filterList[i].Value, getDPValue(currentDataPoint))
 		}
-		if filterList[i].OpValue == "change" {
-			return evaluateChangeFilter(filterList[i].OpExtra, getDPValue(latestDataPoint), getDPValue(currentDataPoint))
+		if filterList[i].Type == "change" {
+			return evaluateChangeFilter(filterList[i].Value, getDPValue(latestDataPoint), getDPValue(currentDataPoint))
 		}
 	}
 	return false
@@ -266,22 +268,22 @@ func unpackDataPoint(dp string) (string, string) { // {"value":"Y", "ts":"Z"}
 	return dataPoint.Value, dataPoint.Ts
 }
 
-func evaluateRangeFilter(opExtra string, currentValue string) bool {
-	//utils.Info.Printf("evaluateRangeFilter: opExtra=%s", opExtra)
+func evaluateRangeFilter(opValue string, currentValue string) bool {
+	//utils.Info.Printf("evaluateRangeFilter: opValue=%s", opValue)
 	type ChangeFilter struct {
 		LogicOp  string `json:"logic-op"`
 		Boundary string `json:"boundary"`
 	}
 	var changeFilter []ChangeFilter
 	var err error
-	if strings.Contains(opExtra, "[") == false {
+	if strings.Contains(opValue, "[") == false {
 		changeFilter = make([]ChangeFilter, 1)
-		err = json.Unmarshal([]byte(opExtra), &(changeFilter[0]))
+		err = json.Unmarshal([]byte(opValue), &(changeFilter[0]))
 	} else {
-		err = json.Unmarshal([]byte(opExtra), &changeFilter)
+		err = json.Unmarshal([]byte(opValue), &changeFilter)
 	}
 	if err != nil {
-		utils.Error.Printf("evaluateChangeFilter: Unmarshal error=%s", err)
+		utils.Error.Printf("evaluateRangeFilter: Unmarshal error=%s", err)
 		return false
 	}
 	evaluation := true
@@ -291,14 +293,14 @@ func evaluateRangeFilter(opExtra string, currentValue string) bool {
 	return evaluation
 }
 
-func evaluateChangeFilter(opExtra string, latestValue string, currentValue string) bool {
-	//utils.Info.Printf("evaluateChangeFilter: opExtra=%s", opExtra)
+func evaluateChangeFilter(opValue string, latestValue string, currentValue string) bool {
+	//utils.Info.Printf("evaluateChangeFilter: opValue=%s", opValue)
 	type ChangeFilter struct {
 		LogicOp string `json:"logic-op"`
 		Diff    string `json:"diff"`
 	}
 	var changeFilter ChangeFilter
-	err := json.Unmarshal([]byte(opExtra), &changeFilter)
+	err := json.Unmarshal([]byte(opValue), &changeFilter)
 	if err != nil {
 		utils.Error.Printf("evaluateChangeFilter: Unmarshal error=%s", err)
 		return false
@@ -393,7 +395,7 @@ func addDataPackage(incompleteMessage string, dataPack string) string {
 	return incompleteMessage[:len(incompleteMessage)-1] + ", \"data\":" + dataPack + "}"
 }
 
-func checkSubscription(subscriptionChannel chan int, CLChan chan CLPack, backendChannel chan string, subscriptionList []SubscriptionState) {
+func checkSubscription(subscriptionChannel chan int, CLChan chan CLPack, backendChannel chan string, subscriptionList []SubscriptionState) []SubscriptionState {
 	var subscriptionMap = make(map[string]interface{})
 	subscriptionMap["action"] = "subscription"
 	select {
@@ -402,10 +404,16 @@ func checkSubscription(subscriptionChannel chan int, CLChan chan CLPack, backend
 		subscriptionMap["subscriptionId"] = strconv.Itoa(subscriptionState.subscriptionId)
 		subscriptionMap["RouterId"] = subscriptionState.routerId
 		backendChannel <- addDataPackage(utils.FinalizeMessage(subscriptionMap), getDataPack(subscriptionState.path, nil))
-	case clPack := <-CLChan: // curve logic notification
-		subscriptionState := subscriptionList[getSubcriptionStateIndex(clPack.SubscriptionId, subscriptionList)]
-		subscriptionMap["subscriptionId"] = strconv.Itoa(subscriptionState.subscriptionId)
-		subscriptionMap["RouterId"] = subscriptionState.routerId
+		case clPack := <-CLChan: // curve logging notification
+		index := getSubcriptionStateIndex(clPack.SubscriptionId, subscriptionList)
+		//subscriptionState := subscriptionList[index]
+		subscriptionList[index].SubscriptionThreads--
+		if (clPack.SubscriptionId == closeClSubId && subscriptionList[index].SubscriptionThreads == 0) {
+			subscriptionList = removeFromsubscriptionList(subscriptionList, index)
+			closeClSubId = -1
+		}
+		subscriptionMap["subscriptionId"] = strconv.Itoa(subscriptionList[index].subscriptionId)
+		subscriptionMap["RouterId"] = subscriptionList[index].routerId
 		backendChannel <- addDataPackage(utils.FinalizeMessage(subscriptionMap), clPack.DataPack)
 	default:
 		// check if range or change notification triggered
@@ -421,6 +429,7 @@ func checkSubscription(subscriptionChannel chan int, CLChan chan CLPack, backend
 			}
 		}
 	}
+	return subscriptionList
 }
 
 func deactivateSubscription(subscriptionList []SubscriptionState, subscriptionId string) (int, []SubscriptionState) {
@@ -429,37 +438,41 @@ func deactivateSubscription(subscriptionList []SubscriptionState, subscriptionId
 	if index == -1 {
 		return -1, subscriptionList
 	}
-	utils.Info.Printf("deactivateSubscription: getOpType(subscriptionList[index].filterList, time-based)=%d", getOpType(subscriptionList[index].filterList, "time-based"))
-	utils.Info.Printf("deactivateSubscription: getOpType(subscriptionList[index].filterList, curve-logic)=%d", getOpType(subscriptionList[index].filterList, "curve-logic"))
-	if getOpType(subscriptionList[index].filterList, "time-based") == true {
+	if getOpType(subscriptionList[index].filterList, "timebased") == true {
 		deactivateInterval(subscriptionList[index].subscriptionId)
-	} else if getOpType(subscriptionList[index].filterList, "curve-logic") == true {
-		m.Lock()
-		killCurveLogicId = subscriptionList[index].subscriptionId
-		utils.Info.Printf("deactivateSubscription: killCurveLogicId set to %d", killCurveLogicId)
-		m.Unlock()
+	} else if getOpType(subscriptionList[index].filterList, "curvelog") == true {
+		mcloseClSubId.Lock()
+		closeClSubId = subscriptionList[index].subscriptionId
+		utils.Info.Printf("deactivateSubscription: closeClSubId set to %d", closeClSubId)
+		mcloseClSubId.Unlock()
 	}
-	//remove from list
+	if getOpType(subscriptionList[index].filterList, "curvelog") == false {
+	    subscriptionList = removeFromsubscriptionList(subscriptionList, index)
+	}
+	return 1, subscriptionList
+}
+
+func removeFromsubscriptionList(subscriptionList []SubscriptionState, index int) []SubscriptionState {
 	subscriptionList[index] = subscriptionList[len(subscriptionList)-1] // Copy last element to index i.
 	subscriptionList = subscriptionList[:len(subscriptionList)-1]       // Truncate slice.
-	return 1, subscriptionList
+	return subscriptionList
 }
 
 func getOpType(filterList []utils.FilterObject, opType string) bool {
 	for i := 0; i < len(filterList); i++ {
-		if filterList[i].OpValue == opType {
+		if filterList[i].Type == opType {
 			return true
 		}
 	}
 	return false
 }
 
-func getIntervalPeriod(opExtra string) int { // {"period":"X"}
+func getIntervalPeriod(opValue string) int { // {"period":"X"}
 	type IntervalData struct {
 		Period string `json:"period"`
 	}
 	var intervalData IntervalData
-	err := json.Unmarshal([]byte(opExtra), &intervalData)
+	err := json.Unmarshal([]byte(opValue), &intervalData)
 	if err != nil {
 		utils.Error.Printf("getIntervalPeriod: Unmarshal failed, err=%s", err)
 		return -1
@@ -472,96 +485,45 @@ func getIntervalPeriod(opExtra string) int { // {"period":"X"}
 	return period
 }
 
-func getCurveLogicParams(opExtra string) (int, int) { // {"max-err": "X", "buf-size":"Y"}
+func getCurveLoggingParams(opValue string) (float64, int) { // {"maxerr": "X", "bufsize":"Y"}
 	type CLData struct {
-		MaxErr  string `json:"max-err"`
-		BufSize string `json:"buf-size"`
+		MaxErr  string `json:"maxerr"`
+		BufSize string `json:"bufsize"`
 	}
 	var cLData CLData
-	err := json.Unmarshal([]byte(opExtra), &cLData)
+	err := json.Unmarshal([]byte(opValue), &cLData)
 	if err != nil {
 		utils.Error.Printf("getIntervalPeriod: Unmarshal failed, err=%s", err)
-		return 0, 0
+		return 0.0, 0
 	}
-	maxErr, err := strconv.Atoi(cLData.MaxErr)
+	maxErr, err := strconv.ParseFloat(cLData.MaxErr, 64)
 	if err != nil {
 		utils.Error.Printf("getIntervalPeriod: MaxErr invalid integer, maxErr=%s", cLData.MaxErr)
-		maxErr = 0
+		maxErr = 0.0
 	}
 	bufSize, err := strconv.Atoi(cLData.BufSize)
 	if err != nil {
 		utils.Error.Printf("getIntervalPeriod: BufSize invalid integer, BufSize=%s", cLData.BufSize)
-		maxErr = 0
+		maxErr = 0.0
 	}
 	return maxErr, bufSize
 }
 
 func activateIfIntervalOrCL(filterList []utils.FilterObject, subscriptionChan chan int, CLChan chan CLPack, subscriptionId int, paths []string) {
 	for i := 0; i < len(filterList); i++ {
-		if filterList[i].OpValue == "time-based" {
-			interval := getIntervalPeriod(filterList[i].OpExtra)
+		if filterList[i].Type == "timebased" {
+			interval := getIntervalPeriod(filterList[i].Value)
 			utils.Info.Printf("interval activated, period=%d", interval)
 			if interval > 0 {
 				activateInterval(subscriptionChan, subscriptionId, interval)
 			}
 			break
 		}
-		if filterList[i].OpValue == "curve-logic" {
-			go curveLogicServer(CLChan, subscriptionId, filterList[i].OpExtra, paths, &m)
+		if filterList[i].Type == "curvelog" {
+			go curveLoggingServer(CLChan, threadsChan, subscriptionId, filterList[i].Value, paths)
 			break
 		}
 	}
-}
-
-func curveLogicServer(CLChan chan CLPack, subscriptionId int, opExtra string, paths []string, m *sync.Mutex) {
-	maxError, bufSize := getCurveLogicParams(opExtra)
-	type DataPoint struct {
-		Value string
-		Ts    string
-	}
-	clBuf := make([]DataPoint, bufSize)
-	bufIndex := 0
-	utils.Info.Printf("Curve logic activated with max error=%d, buffer size=%d", maxError, bufSize)
-	for {
-		// TODO: load buffer with new dp from statestorage
-		clBuf[bufIndex].Value = "0"
-		clBuf[bufIndex].Ts = ""
-		bufIndex++
-		m.Lock()
-		if killCurveLogicId == subscriptionId {
-			m.Unlock()
-			break
-		}
-		m.Unlock()
-		if bufIndex == bufSize {
-			// TODO: run CL algo, send resulting dataPack on CLChan
-			simulateClResults(paths, subscriptionId, CLChan) // simulate by having bufIndex counter, send dummy dataPack
-			bufIndex = 0
-		}
-		time.Sleep(200 * time.Millisecond) // 200 ms is appropriate for simulation case, probably less in non-sim (configuration data from vehicle system?)
-	}
-	utils.Info.Printf("Curve logic de-activated for subscriptionId=%d", subscriptionId)
-}
-
-func simulateClResults(paths []string, subscriptionId int, CLChan chan CLPack) { //TODO: replace with real CL impl
-	dp := `[{"value":"1", "ts":"2020-12-31T23:59:40Z"}, {"value":"2", "ts":"2020-12-31T23:59:56Z"}, {"value":"3", "ts":"2020-12-31T23:59:59Z"}]`
-	data := ""
-	if len(paths) > 1 {
-		data = "["
-	}
-	for i := 0; i < len(paths); i++ {
-		data += `{"path":"` + paths[i] + `", "dp":` + dp + "}, "
-	}
-	data = data[:len(data)-2]
-	if len(paths) > 1 {
-		data = "]"
-	}
-	var clPack CLPack
-	clPack.DataPack = data
-	//    clPack.DataPack = `{"data":` + data + `}`
-	clPack.SubscriptionId = subscriptionId
-	utils.Info.Printf("simulateClResults:dataPack=%s", clPack.DataPack)
-	CLChan <- clPack
 }
 
 func getVehicleData(path string) string { // returns {"value":"Y", "ts":"Z"}
@@ -570,6 +532,7 @@ func getVehicleData(path string) string { // returns {"value":"Y", "ts":"Z"}
 		if err != nil {
 			return `{"value":"` + strconv.Itoa(dummyValue) + `", "ts":"` + utils.GetRfcTime() + `"}`
 		}
+		defer rows.Close()
 		value := ""
 		timestamp := ""
 
@@ -578,7 +541,6 @@ func getVehicleData(path string) string { // returns {"value":"Y", "ts":"Z"}
 		if err != nil {
 			return `{"value":"` + strconv.Itoa(dummyValue) + `", "ts":"` + utils.GetRfcTime() + `"}`
 		}
-		rows.Close()
 		return `{"value":"` + value + `", "ts":"` + timestamp + `"}`
 	} else {
 		return `{"value":"` + strconv.Itoa(dummyValue) + `", "ts":"` + utils.GetRfcTime() + `"}`
@@ -592,6 +554,7 @@ func setVehicleData(path string, value string) string {
 			utils.Error.Printf("Could not prepare for statestorage updating, err = %s", err)
 			return ""
 		}
+		defer stmt.Close()
 
 		ts := utils.GetRfcTime()
 		_, err = stmt.Exec(value, ts, path[1:len(path)-1]) // remove quotes surrounding path
@@ -599,7 +562,6 @@ func setVehicleData(path string, value string) string {
 			utils.Error.Printf("Could not update statestorage, err = %s", err)
 			return ""
 		}
-		stmt.Close()
 		return ts
 	}
 	return ""
@@ -677,7 +639,7 @@ func processHistoryCtrl(histCtrlReq string, historyChan chan int, listExists boo
 		return "500 Internal Server Error"
 	}
 	var requestMap = make(map[string]interface{})
-	utils.ExtractPayload(histCtrlReq, &requestMap)
+	utils.MapRequest(histCtrlReq, &requestMap)
 	if requestMap["action"] == nil || requestMap["path"] == nil {
 		utils.Error.Printf("processHistoryCtrl:Missing command param")
 		return "400 Bad Request"
@@ -748,7 +710,7 @@ func convertFromIsoTime(isoTime string) (time.Time, error) {
 
 func processHistoryGet(request string) string { // {"path":"X", "period":"Y"}
 	var requestMap = make(map[string]interface{})
-	utils.ExtractPayload(request, &requestMap)
+	utils.MapRequest(request, &requestMap)
 	index := getHistoryListIndex(requestMap["path"].(string))
 	currentTs := getCurrentUtcTime()
 	periodTime, _ := convertFromIsoTime(requestMap["period"].(string))
@@ -846,8 +808,8 @@ func getDataPack(pathArray []string, filterList []utils.FilterObject) string {
 	period := ""
 	if filterList != nil {
 		for i := 0; i < len(filterList); i++ {
-			if filterList[i].OpType == "history" {
-				period = filterList[i].OpValue
+			if filterList[i].Type == "history" {
+				period = filterList[i].Value
 				utils.Info.Printf("Historic data request, period=%s", period)
 				getHistory = true
 				break
@@ -877,25 +839,44 @@ func getDataPack(pathArray []string, filterList []utils.FilterObject) string {
 }
 
 func main() {
-	udsPath := flag.String("uds", "/tmp/vissv2/histctrlserver.sock", "Set UDS path and file")
-	vssPathList := flag.String("vssPathList", "../vsspathlist.json", "Set the path to vsspathlist file")
-	flag.Parse()
+	// Create new parser object
+	parser := argparse.NewParser("print", "Service Manager service")
+	// Create string flag
+	logFile := parser.Flag("", "logfile", &argparse.Options{Required: false, Help: "outputs to logfile in ./logs folder"})
+	logLevel := parser.Selector("", "loglevel", []string{"trace", "debug", "info", "warn", "error", "fatal", "panic"}, &argparse.Options{
+		Required: false,
+		Help:     "changes log output level",
+		Default:  "info"})
+	udsPath := parser.String("", "uds", &argparse.Options{
+		Required: false,
+		Help:     "Set UDS path and file",
+		Default:  "/tmp/vissv2/histctrlserver.sock"})
+	vssPathList := parser.String("", "vssPathList", &argparse.Options{
+		Required: false,
+		Help:     "Set the path to vsspathlist file",
+		Default:  "../vsspathlist.json"})
+	dbFile := parser.String("", "dbfile", &argparse.Options{
+		Required: false,
+		Help:     "statestorage database filename",
+		Default:  "statestorage.db"})
+
+	// Parse input
+	err := parser.Parse(os.Args)
+	if err != nil {
+		fmt.Print(parser.Usage(err))
+	}
 
 	//os.Remove("/tmp/vissv2/histctrlserver.sock")
 	//listExists := createHistoryList("../vsspathlist.json") // file is created by core-server at startup
 
-	utils.InitLog("service-mgr-log.txt", "./logs")
-	dbFile := "statestorage.db"
-	if len(os.Args) == 2 {
-		dbFile = os.Args[1]
-	}
-	if utils.FileExists(dbFile) == true {
-		db, dbErr = sql.Open("sqlite3", dbFile)
+	utils.InitLog("service-mgr-log.txt", "./logs", *logFile, *logLevel)
+	if utils.FileExists(*dbFile) {
+		db, dbErr = sql.Open("sqlite3", *dbFile)
 		if dbErr != nil {
-			utils.Error.Printf("Could not open DB file = %s, err = %s", os.Args[1], dbErr)
+			utils.Error.Printf("Could not open DB file = %s, err = %s", *dbFile, dbErr)
 			os.Exit(1)
 		}
-		//            defer db.Close()
+		defer db.Close()
 		isStateStorage = true
 	}
 
@@ -906,7 +887,7 @@ func main() {
 	regRequest := RegRequest{Rootnode: "Vehicle"}
 	subscriptionChan := make(chan int)
 	historyAccessChannel = make(chan string)
-	CLChannel := make(chan CLPack)
+	CLChannel = make(chan CLPack, 5) // allow some buffering...
 	subscriptionList := []SubscriptionState{}
 	subscriptionId = 1 // do not start with zero!
 
@@ -924,7 +905,7 @@ func main() {
 			// TODO: interact with underlying subsystem to get the value
 			var requestMap = make(map[string]interface{})
 			var responseMap = make(map[string]interface{})
-			utils.ExtractPayload(request, &requestMap)
+			utils.MapRequest(request, &requestMap)
 			responseMap["RouterId"] = requestMap["RouterId"]
 			responseMap["action"] = requestMap["action"]
 			responseMap["requestId"] = requestMap["requestId"]
@@ -1017,8 +998,10 @@ func main() {
 			if dummyValue > 999 {
 				dummyValue = 0
 			}
+		case subThreads := <- threadsChan:
+			subscriptionList = setSubscriptionListThreads(subscriptionList, subThreads)
 		default:
-			checkSubscription(subscriptionChan, CLChannel, backendChan, subscriptionList)
+			subscriptionList = checkSubscription(subscriptionChan, CLChannel, backendChan, subscriptionList)
 			time.Sleep(50 * time.Millisecond)
 		} // select
 	} // for

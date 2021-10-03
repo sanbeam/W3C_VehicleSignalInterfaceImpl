@@ -1,3 +1,11 @@
+/**
+* (C) 2021 Geotab Inc
+*
+* All files and artifacts in the repository at https://github.com/MEAE-GOT/W3C_VehicleSignalInterfaceImpl
+* are licensed under the provisions of the license provided by the LICENSE file in this repository.
+*
+**/
+
 package utils
 
 import (
@@ -53,12 +61,14 @@ func GetModelIP(ipModel int) string {
 	return localAddr.IP.String()
 }
 
-func ExtractPayload(request string, rMap *map[string]interface{}) {
+func MapRequest(request string, rMap *map[string]interface{}) int {
 	decoder := json.NewDecoder(strings.NewReader(request))
 	err := decoder.Decode(rMap)
 	if err != nil {
 		Error.Printf("extractPayload: JSON decode failed for request:%s\n", request)
+		return -1
 	}
+	return 0
 }
 
 func UrlToPath(url string) string {
@@ -186,9 +196,8 @@ func FileExists(filename string) bool {
 }
 
 type FilterObject struct {
-    OpType string
-    OpValue string
-    OpExtra string
+    Type string
+    Value string
 }
 
 func UnpackFilter(filter interface{}, fList *[]FilterObject) {  // See VISSv CORE, Filtering chapter for filter structure
@@ -220,33 +229,31 @@ func unpackFilterLevel1(filterArray []interface{}, fList *[]FilterObject) {
     }
 }
 
-func unpackFilterLevel2(index int, purposeElem map[string]interface{}, fList *[]FilterObject) {
-    for k, v := range purposeElem {
+func unpackFilterLevel2(index int, filterExpression map[string]interface{}, fList *[]FilterObject) {
+    for k, v := range filterExpression {
         switch vv := v.(type) {
           case string:
             Info.Println(k, "is string", vv)
-            if (k == "op-type") {
-                (*fList)[index].OpType = vv
-            } else if (k == "op-value") {
-                (*fList)[index].OpValue = vv
+            if (k == "type") {
+                (*fList)[index].Type = vv
+            } else if (k == "value") {
+                (*fList)[index].Value = vv
             }
           case []interface{}:
             Info.Println(k, "is an array:, len=",strconv.Itoa(len(vv)))
             arrayVal, err := json.Marshal(vv)
             if err != nil {
 		Error.Print("UnpackFilter(): JSON array encode failed. ", err)
-	    } else if (k == "op-value") {
-	        (*fList)[index].OpValue = string(arrayVal)
-	    } else {
-	        (*fList)[index].OpExtra = string(arrayVal)
+	    } else if (k == "value") {
+	        (*fList)[index].Value = string(arrayVal)
 	    }
           case map[string]interface{}:
             Info.Println(k, "is a map:")
-            opExtra, err := json.Marshal(vv)
+            opValue, err := json.Marshal(vv)
             if err != nil {
 		Error.Print("UnpackFilter(): JSON map encode failed. ", err)
 	    } else {
-	        (*fList)[index].OpExtra = string(opExtra)
+	        (*fList)[index].Value = string(opValue)
 	    }
           default:
             Info.Println(k, "is of an unknown type")
